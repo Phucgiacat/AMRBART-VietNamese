@@ -70,9 +70,8 @@ class AMRParsingDataSet(Dataset):
         print("colums:", column_names)
 
     def tokenize_function(self, examples):
-        import pyvi.ViTokenizer as ViTokenizer
         amr = examples["src"]  # AMR tokens
-        txt = [ViTokenizer.tokenize(t) for t in examples["tgt"]]  # Segment Vietnamese Text tokens
+        txt = examples["tgt"]  # Text tokens already segmented in jsonl
 
         amr_ids = [self.tokenizer.tokenize_amr(itm.split())[:self.max_tgt_length-2] + [self.tokenizer.amr_eos_token_id] for itm in amr]
         
