@@ -47,7 +47,7 @@ class AMRData(datasets.GeneratorBasedBuilder):
         return datasets.DatasetInfo(
             description=_DESCRIPTION,
             features=datasets.Features(
-                {_SRC: datasets.Value("string"), _TGT: datasets.Value("string"),}
+                {_SRC: datasets.Value("string"), _TGT: datasets.Value("string"), "dependency_matrix": datasets.Sequence(datasets.Sequence(datasets.Value("int32")))}
             ),
             supervised_keys=None,
         )
@@ -76,4 +76,5 @@ class AMRData(datasets.GeneratorBasedBuilder):
                     json_dict = json.loads(line.strip())
                     src = json_dict["amr"]
                     tgt = json_dict["sent"]
-                    yield idx, {_SRC: src, _TGT: tgt}
+                    dep_matrix = json_dict.get("dependency_matrix", [])
+                    yield idx, {_SRC: src, _TGT: tgt, "dependency_matrix": dep_matrix}

@@ -176,6 +176,7 @@ class BartAttention(nn.Module):
         key_value_states: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         attention_mask: Optional[torch.Tensor] = None,
+        dependency_mask: Optional[torch.Tensor] = None,
         layer_head_mask: Optional[torch.Tensor] = None,
         output_attentions: bool = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -239,6 +240,12 @@ class BartAttention(nn.Module):
                     f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
                 )
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
+            
+            if dependency_mask is not None and not is_cross_attention:
+                # Add dependency mask as an inductive bias
+                # dependency_mask is [bsz, 1, tgt_len, src_len]
+                attn_weights = attn_weights + dependency_mask.to(attn_weights.device)
+
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
@@ -305,7 +312,8 @@ class BartEncoderLayer(nn.Module):
         self,
         hidden_states: torch.FloatTensor,
         attention_mask: torch.FloatTensor,
-        layer_head_mask: torch.FloatTensor,
+        dependency_mask: Optional[torch.FloatTensor] = None,
+        layer_head_mask: torch.FloatTensor = None,
         output_attentions: Optional[bool] = False,
     ) -> Tuple[torch.FloatTensor, Optional[torch.FloatTensor]]:
         """
@@ -323,6 +331,7 @@ class BartEncoderLayer(nn.Module):
         hidden_states, attn_weights, _ = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
+            dependency_mask=dependency_mask,
             layer_head_mask=layer_head_mask,
             output_attentions=output_attentions,
         )
@@ -736,6 +745,7 @@ class BartEncoder(BartPretrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        dependency_mask: Optional[torch.Tensor] = None,
         head_mask: Optional[torch.Tensor] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         output_attentions: Optional[bool] = None,
@@ -808,6 +818,9 @@ class BartEncoder(BartPretrainedModel):
         if attention_mask is not None:
             # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
             attention_mask = _expand_mask(attention_mask, inputs_embeds.dtype)
+            
+        if dependency_mask is not None:
+            dependency_mask = dependency_mask.unsqueeze(1) # [bsz, 1, seq_len, seq_len]
 
         encoder_states = () if output_hidden_states else None
         all_attentions = () if output_attentions else None
@@ -840,12 +853,14 @@ class BartEncoder(BartPretrainedModel):
                         create_custom_forward(encoder_layer),
                         hidden_states,
                         attention_mask,
+                        dependency_mask,
                         (head_mask[idx] if head_mask is not None else None),
                     )
                 else:
                     layer_outputs = encoder_layer(
                         hidden_states,
                         attention_mask,
+                        dependency_mask=dependency_mask,
                         layer_head_mask=(head_mask[idx] if head_mask is not None else None),
                         output_attentions=output_attentions,
                     )
@@ -1182,6 +1197,7 @@ class BartModel(BartPretrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        dependency_mask: Optional[torch.Tensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
         decoder_attention_mask: Optional[torch.LongTensor] = None,
         head_mask: Optional[torch.Tensor] = None,
@@ -1222,6 +1238,7 @@ class BartModel(BartPretrainedModel):
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                dependency_mask=dependency_mask,
                 head_mask=head_mask,
                 inputs_embeds=inputs_embeds,
                 output_attentions=output_attentions,
@@ -1316,6 +1333,7 @@ class BartForConditionalGeneration(BartPretrainedModel):
         self,
         input_ids: torch.LongTensor = None,
         attention_mask: Optional[torch.Tensor] = None,
+        dependency_mask: Optional[torch.Tensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
         decoder_attention_mask: Optional[torch.LongTensor] = None,
         head_mask: Optional[torch.Tensor] = None,
@@ -1353,6 +1371,7 @@ class BartForConditionalGeneration(BartPretrainedModel):
         outputs = self.model(
             input_ids,
             attention_mask=attention_mask,
+            dependency_mask=dependency_mask,
             decoder_input_ids=decoder_input_ids,
             encoder_outputs=encoder_outputs,
             decoder_attention_mask=decoder_attention_mask,
