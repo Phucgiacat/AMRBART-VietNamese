@@ -1414,6 +1414,7 @@ class BartForConditionalGeneration(BartPretrainedModel):
         decoder_input_ids,
         past=None,
         attention_mask=None,
+        dependency_mask=None,
         head_mask=None,
         decoder_head_mask=None,
         cross_attn_head_mask=None,
@@ -1431,11 +1432,13 @@ class BartForConditionalGeneration(BartPretrainedModel):
             "past_key_values": past,
             "decoder_input_ids": decoder_input_ids,
             "attention_mask": attention_mask,
+            "dependency_mask": dependency_mask,
             "head_mask": head_mask,
             "decoder_head_mask": decoder_head_mask,
             "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
         }
+
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
         return shift_tokens_right(labels, self.config.pad_token_id, self.config.decoder_start_token_id)
