@@ -155,7 +155,6 @@ def main():
                 
                 logger.info(f"Annotating {len(texts_to_annotate)} sentences with PhoNLP...")
                 try:
-                    import sys
                     from tqdm import tqdm
                     
                     all_words = []
