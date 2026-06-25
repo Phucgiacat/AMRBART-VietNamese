@@ -33,9 +33,6 @@ if [ ! -d ${DataCache} ];then
   mkdir -p ${DataCache}
 fi
 
-# Inject dependency matrix using PhoNLP if missing in data4parsing.jsonl
-python inject_dependency.py $DataPath/data4parsing.jsonl
-
 # torchrun --nnodes=1 --nproc_per_node=1 --max_restarts=0 --rdzv_id=1 --rdzv_backend=c10d main.py \
 python -u main.py \
     --data_dir $DataPath \

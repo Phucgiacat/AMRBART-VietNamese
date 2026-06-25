@@ -2435,7 +2435,7 @@ class Trainer:
                 ctx_manager = (
                     torch.cpu.amp.autocast(dtype=self.amp_dtype)
                     if self.use_cpu_amp
-                    else torch.cuda.amp.autocast(dtype=self.amp_dtype)
+                    else torch.amp.autocast("cuda", dtype=self.amp_dtype)
                 )
             else:
                 ctx_manager = torch.cuda.amp.autocast()

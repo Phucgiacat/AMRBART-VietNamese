@@ -14,6 +14,9 @@ import transformers
 import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
+import collections
+import json
+import pyvi.ViTokenizer as ViTokenizer
 from datasets import load_dataset, load_metric, load_from_disk
 from data_interface.dataset import AMR2TextDataSet, AMRParsingDataSet, DataCollatorForAMR2Text, DataCollatorForAMRParsing
 from model_interface.modeling_bart import BartForConditionalGeneration
@@ -77,6 +80,83 @@ def main():
         )
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    # --- INJECT DEPENDENCY MATRIX IF MISSING IN TEST FILE ---
+    if training_args.do_predict and data_args.test_file is not None:
+        try:
+            import phonlp
+            HAS_PHONLP = True
+        except ImportError:
+            logger.warning("phonlp is not installed. Dependency matrices will be empty.")
+            HAS_PHONLP = False
+
+        if HAS_PHONLP:
+            logger.info(f"Checking and injecting dependency matrices for {data_args.test_file}...")
+            phonlp_model = None
+            needs_update = False
+            new_lines = []
+            
+            with open(data_args.test_file, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                
+            for idx, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except:
+                    new_lines.append(line)
+                    continue
+                    
+                if "dependency_matrix" not in record or not record["dependency_matrix"]:
+                    needs_update = True
+                    tgt = record.get("tgt", record.get("sent", ""))
+                    
+                    if "_" not in tgt and " " in tgt:
+                        tgt = ViTokenizer.tokenize(tgt)
+                        record["tgt"] = tgt
+                        record["sent"] = tgt
+                    
+                    words = tgt.split()
+                    n = len(words)
+                    matrix = [[0] * n for _ in range(n)]
+                    for i in range(n):
+                        matrix[i][i] = 1
+                        
+                    if n > 0:
+                        if phonlp_model is None:
+                            logger.info("Loading PhoNLP model for inference injection...")
+                            if not os.path.exists('./phonlp'):
+                                phonlp.download(save_dir='./phonlp')
+                            phonlp_model = phonlp.load(save_dir='./phonlp')
+                            
+                        try:
+                            annotations = phonlp_model.annotate(tgt)
+                            if len(annotations[0]) > 0:
+                                d_words, _, _, deps = annotations[0][0], annotations[1][0], annotations[2][0], annotations[3][0]
+                                if len(d_words) == n:
+                                    for i, (head_idx, rel) in enumerate(deps):
+                                        head_idx = int(head_idx)
+                                        if head_idx > 0:
+                                            matrix[i][head_idx - 1] = 1
+                                            matrix[head_idx - 1][i] = 1
+                        except Exception as e:
+                            logger.error(f"PhoNLP error: {e}")
+                            
+                    record["dependency_matrix"] = matrix
+                    new_lines.append(json.dumps(record, ensure_ascii=False))
+                else:
+                    new_lines.append(line)
+                    
+            if needs_update:
+                logger.info(f"Updating {data_args.test_file} with injected dependency matrices...")
+                with open(data_args.test_file, 'w', encoding='utf-8') as f:
+                    for line in new_lines:
+                        f.write(line + '\n')
+            else:
+                logger.info("All records already have dependency matrices.")
+    # --------------------------------------------------------
 
     assert training_args.task in ("amr2text", "text2amr"), f"Invalid task name:{training_args.task}, should be in ['amr2text', 'text2amr')"
     # Setup logging
