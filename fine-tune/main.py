@@ -129,6 +129,17 @@ def main():
                             logger.info("Loading PhoNLP model for inference injection...")
                             if not os.path.exists('./phonlp'):
                                 phonlp.download(save_dir='./phonlp')
+                            
+                            # --- MONKEY PATCH REQUESTS FOR HUGGINGFACE BUG ---
+                            import requests
+                            orig_request = requests.Session.request
+                            def patched_request(self, method, url, *args, **kwargs):
+                                if url.startswith('/api/'):
+                                    url = 'https://huggingface.co' + url
+                                return orig_request(self, method, url, *args, **kwargs)
+                            requests.Session.request = patched_request
+                            # -------------------------------------------------
+                            
                             phonlp_model = phonlp.load(save_dir='./phonlp')
                             
                         try:
