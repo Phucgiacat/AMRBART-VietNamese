@@ -92,21 +92,24 @@ def main():
 
         if HAS_PHONLP:
             logger.info(f"Checking and injecting dependency matrices for {data_args.test_file}...")
-            phonlp_model = None
-            needs_update = False
-            new_lines = []
             
             with open(data_args.test_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 
+            needs_update = False
+            parsed_records = []
+            texts_to_annotate = []
+            text_indices = []
+            
             for idx, line in enumerate(lines):
                 line = line.strip()
                 if not line:
+                    parsed_records.append(line)
                     continue
                 try:
                     record = json.loads(line)
                 except:
-                    new_lines.append(line)
+                    parsed_records.append(line)
                     continue
                     
                 if "dependency_matrix" not in record or not record["dependency_matrix"]:
@@ -124,47 +127,59 @@ def main():
                     for i in range(n):
                         matrix[i][i] = 1
                         
-                    if n > 0:
-                        if phonlp_model is None:
-                            logger.info("Loading PhoNLP model for inference injection...")
-                            if not os.path.exists('./phonlp'):
-                                phonlp.download(save_dir='./phonlp')
-                            
-                            # --- MONKEY PATCH REQUESTS FOR HUGGINGFACE BUG ---
-                            import requests
-                            orig_request = requests.Session.request
-                            def patched_request(self, method, url, *args, **kwargs):
-                                if url.startswith('/api/'):
-                                    url = 'https://huggingface.co' + url
-                                return orig_request(self, method, url, *args, **kwargs)
-                            requests.Session.request = patched_request
-                            # -------------------------------------------------
-                            
-                            phonlp_model = phonlp.load(save_dir='./phonlp')
-                            
-                        try:
-                            annotations = phonlp_model.annotate(tgt)
-                            if len(annotations[0]) > 0:
-                                d_words, _, _, deps = annotations[0][0], annotations[1][0], annotations[2][0], annotations[3][0]
-                                if len(d_words) == n:
-                                    for i, (head_idx, rel) in enumerate(deps):
-                                        head_idx = int(head_idx)
-                                        if head_idx > 0:
-                                            matrix[i][head_idx - 1] = 1
-                                            matrix[head_idx - 1][i] = 1
-                        except Exception as e:
-                            logger.error(f"PhoNLP error: {e}")
-                            
                     record["dependency_matrix"] = matrix
-                    new_lines.append(json.dumps(record, ensure_ascii=False))
+                    parsed_records.append(record)
+                    
+                    if n > 0:
+                        texts_to_annotate.append(tgt)
+                        text_indices.append(len(parsed_records) - 1)
                 else:
-                    new_lines.append(line)
+                    parsed_records.append(record)
+                    
+            if needs_update and texts_to_annotate:
+                logger.info("Loading PhoNLP model for inference injection...")
+                if not os.path.exists('./phonlp'):
+                    phonlp.download(save_dir='./phonlp')
+                
+                # --- MONKEY PATCH REQUESTS FOR HUGGINGFACE BUG ---
+                import requests
+                orig_request = requests.Session.request
+                def patched_request(self, method, url, *args, **kwargs):
+                    if url.startswith('/api/'):
+                        url = 'https://huggingface.co' + url
+                    return orig_request(self, method, url, *args, **kwargs)
+                requests.Session.request = patched_request
+                # -------------------------------------------------
+                
+                phonlp_model = phonlp.load(save_dir='./phonlp')
+                
+                logger.info(f"Annotating {len(texts_to_annotate)} sentences with PhoNLP...")
+                try:
+                    annotations = phonlp_model.annotate(texts_to_annotate, batch_size=32)
+                    all_words, all_deps = annotations[0], annotations[3]
+                    
+                    for i, list_idx in enumerate(text_indices):
+                        record = parsed_records[list_idx]
+                        n = len(record["dependency_matrix"])
+                        d_words, deps = all_words[i], all_deps[i]
+                        
+                        if len(d_words) == n:
+                            for w_idx, (head_idx, rel) in enumerate(deps):
+                                head_idx = int(head_idx)
+                                if head_idx > 0:
+                                    record["dependency_matrix"][w_idx][head_idx - 1] = 1
+                                    record["dependency_matrix"][head_idx - 1][w_idx] = 1
+                except Exception as e:
+                    logger.error(f"PhoNLP error during batch annotation: {e}")
                     
             if needs_update:
                 logger.info(f"Updating {data_args.test_file} with injected dependency matrices...")
                 with open(data_args.test_file, 'w', encoding='utf-8') as f:
-                    for line in new_lines:
-                        f.write(line + '\n')
+                    for rec in parsed_records:
+                        if isinstance(rec, dict):
+                            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                        else:
+                            f.write(rec + '\n')
             else:
                 logger.info("All records already have dependency matrices.")
     # --------------------------------------------------------
