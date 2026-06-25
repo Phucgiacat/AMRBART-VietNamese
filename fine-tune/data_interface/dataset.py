@@ -71,13 +71,21 @@ class AMRParsingDataSet(Dataset):
 
     def tokenize_function(self, examples):
         amr = examples["src"]  # AMR tokens
-        # Ensure text is word-segmented using pyvi
+        dep_matrices = examples.get("dependency_matrix", [])
+        
+        # Ensure text is word-segmented using pyvi ONLY if dependency matrix is missing
+        # If dependency matrix exists, it means the text was already tokenized by PhoNLP or preparation script
         try:
             from pyvi import ViTokenizer
-            txt = [ViTokenizer.tokenize(t) for t in examples["tgt"]]
+            txt = []
+            for i, t in enumerate(examples["tgt"]):
+                dep = dep_matrices[i] if i < len(dep_matrices) else []
+                if dep and len(dep) > 0:
+                    txt.append(t)
+                else:
+                    txt.append(ViTokenizer.tokenize(t))
         except ImportError:
             txt = examples["tgt"]
-        dep_matrices = examples.get("dependency_matrix", [])
 
         amr_ids = [self.tokenizer.tokenize_amr(itm.split())[:self.max_tgt_length-2] + [self.tokenizer.amr_eos_token_id] for itm in amr]
         

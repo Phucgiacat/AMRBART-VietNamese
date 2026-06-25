@@ -116,23 +116,16 @@ def main():
                     needs_update = True
                     tgt = record.get("tgt", record.get("sent", ""))
                     
-                    if "_" not in tgt and " " in tgt:
-                        tgt = ViTokenizer.tokenize(tgt)
-                        record["tgt"] = tgt
-                        record["sent"] = tgt
+                    # NOTE: We DO NOT use pyvi here anymore!
+                    # We pass the raw or mostly raw string to PhoNLP.
+                    # PhoNLP will return the words (d_words), and we will overwrite 'tgt' and 'sent'.
                     
-                    words = tgt.split()
-                    n = len(words)
-                    matrix = [[0] * n for _ in range(n)]
-                    for i in range(n):
-                        matrix[i][i] = 1
-                        
-                    record["dependency_matrix"] = matrix
+                    # We just save the original string to process with PhoNLP
+                    texts_to_annotate.append(tgt)
+                    text_indices.append(len(parsed_records))
+                    
+                    # We append the record as is for now, we will update it after annotation
                     parsed_records.append(record)
-                    
-                    if n > 0:
-                        texts_to_annotate.append(tgt)
-                        text_indices.append(len(parsed_records) - 1)
                 else:
                     parsed_records.append(record)
                     
@@ -180,15 +173,29 @@ def main():
                     
                     for i, list_idx in enumerate(text_indices):
                         record = parsed_records[list_idx]
-                        n = len(record["dependency_matrix"])
                         d_words, deps = all_words[i], all_deps[i]
+                        n = len(d_words)
                         
-                        if len(d_words) == n:
+                        # Generate the dependency matrix of size n x n
+                        matrix = [[0] * n for _ in range(n)]
+                        for j in range(n):
+                            matrix[j][j] = 1
+                            
+                        if n > 0:
                             for w_idx, (head_idx, rel) in enumerate(deps):
                                 head_idx = int(head_idx)
                                 if head_idx > 0:
-                                    record["dependency_matrix"][w_idx][head_idx - 1] = 1
-                                    record["dependency_matrix"][head_idx - 1][w_idx] = 1
+                                    matrix[w_idx][head_idx - 1] = 1
+                                    matrix[head_idx - 1][w_idx] = 1
+                        
+                        # Overwrite record with PhoNLP's tokenization and generated matrix
+                        record["dependency_matrix"] = matrix
+                        
+                        if n > 0:
+                            # Reconstruct the sentence using PhoNLP's tokenization to ensure 100% matrix alignment!
+                            new_tgt = " ".join(d_words)
+                            record["tgt"] = new_tgt
+                            record["sent"] = new_tgt
                 except Exception as e:
                     if hasattr(sys, 'stderr') and 'old_stderr' in locals():
                         sys.stderr = old_stderr
