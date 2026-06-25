@@ -1,13 +1,23 @@
 import os
 import json
 import re
-import pyvi.ViTokenizer as ViTokenizer
 from collections import defaultdict
+from tqdm import tqdm
+import sys
+
+# --- MONKEY PATCH REQUESTS FOR HUGGINGFACE BUG ---
+import requests
+orig_request = requests.Session.request
+def patched_request(self, method, url, *args, **kwargs):
+    if url.startswith('/api/'):
+        url = 'https://huggingface.co' + url
+    return orig_request(self, method, url, *args, **kwargs)
+requests.Session.request = patched_request
+# -------------------------------------------------
 
 try:
     import phonlp
     print("Loading PhoNLP model...")
-    # Tải model PhoNLP vào thư mục hiện tại nếu chưa có
     if not os.path.exists('./phonlp'):
         phonlp.download(save_dir='./phonlp')
     phonlp_model = phonlp.load(save_dir='./phonlp')
@@ -16,82 +26,95 @@ except ImportError:
     print("WARNING: phonlp is not installed. Will output dummy dependency matrices.")
     HAS_PHONLP = False
 
-def extract_dependency_matrix(segmented_snt):
-    words = segmented_snt.split()
-    n = len(words)
-    matrix = [[0] * n for _ in range(n)]
-    # Tự liên kết chính nó (self-loop)
-    for i in range(n):
-        matrix[i][i] = 1
-        
-    if not HAS_PHONLP or n == 0:
-        return matrix
-
-    try:
-        # PhoNLP input is a raw string or segmented string?
-        # PhoNLP annotate takes segmented string or unsegmented? Usually it can take unsegmented and segment it, 
-        # but to match exact tokens, we should pass the pre-segmented words or just let PhoNLP do it.
-        # However, AMRBART needs alignment. Let's just pass the segmented string.
-        annotations = phonlp_model.annotate(segmented_snt)
-        # annotations: [sentences] -> sentence: (words, pos, ner, dependencies)
-        # Assuming single sentence for AMR
-        if len(annotations[0]) > 0:
-            words, pos, ner, deps = annotations[0][0], annotations[1][0], annotations[2][0], annotations[3][0]
-            # Mismatch check
-            if len(words) == n:
-                for i, (head_idx, rel) in enumerate(deps):
-                    # head_idx is 1-based, 0 means root
-                    head_idx = int(head_idx)
-                    if head_idx > 0:
-                        # Symmetric adjacency
-                        matrix[i][head_idx - 1] = 1
-                        matrix[head_idx - 1][i] = 1
-    except Exception as e:
-        pass
-        
-    return matrix
-
 def preprocess_amr_file(input_file, output_jsonl):
     print(f"Processing {input_file} -> {output_jsonl}")
     with open(input_file, 'r', encoding='utf-8') as f:
         content = f.read().split('\n\n')
 
+    blocks_data = []
+    texts_to_annotate = []
+    
+    for block in content:
+        if not block.strip():
+            continue
+        lines = block.strip().split('\n')
+        snt = ""
+        graph_lines = []
+        for line in lines:
+            if line.startswith('# ::snt'):
+                snt = line.replace('# ::snt', '').strip()
+            elif line.startswith('#'):
+                continue
+            else:
+                graph_lines.append(line)
+        
+        if not snt or not graph_lines:
+            continue
+
+        graph_str = " ".join(graph_lines)
+        graph_str = re.sub(r'\s+', ' ', graph_str)
+        
+        blocks_data.append({
+            "snt": snt,
+            "graph_str": graph_str
+        })
+        texts_to_annotate.append(snt)
+
+    all_words = []
+    all_deps = []
+    
+    if HAS_PHONLP and texts_to_annotate:
+        print(f"Annotating {len(texts_to_annotate)} sentences with PhoNLP...")
+        old_stderr = sys.stderr
+        with open(os.devnull, 'w') as fnull:
+            sys.stderr = fnull
+            for text in tqdm(texts_to_annotate, desc="PhoNLP Annotation", file=old_stderr):
+                try:
+                    annotations = phonlp_model.annotate(text)
+                    if len(annotations[0]) > 0:
+                        all_words.append(annotations[0][0])
+                        all_deps.append(annotations[3][0])
+                    else:
+                        all_words.append([])
+                        all_deps.append([])
+                except Exception:
+                    all_words.append([])
+                    all_deps.append([])
+            sys.stderr = old_stderr
+    else:
+        # Dummy if no PhoNLP
+        for t in texts_to_annotate:
+            w = t.split()
+            all_words.append(w)
+            all_deps.append([])
+
     with open(output_jsonl, 'w', encoding='utf-8') as out_f:
-        for block in content:
-            if not block.strip():
-                continue
-            lines = block.strip().split('\n')
-            snt = ""
-            graph_lines = []
-            for line in lines:
-                if line.startswith('# ::snt'):
-                    snt = line.replace('# ::snt', '').strip()
-                elif line.startswith('#'):
-                    continue
-                else:
-                    graph_lines.append(line)
+        for i, b_data in enumerate(blocks_data):
+            d_words = all_words[i]
+            deps = all_deps[i]
+            n = len(d_words)
             
-            if not snt or not graph_lines:
-                continue
-
-            # Segment sentence using Pyvi
-            segmented_snt = ViTokenizer.tokenize(snt)
-            gt_words = set(segmented_snt.split())
-
-            # Linearized graph string
-            graph_str = " ".join(graph_lines)
-            graph_str = re.sub(r'\s+', ' ', graph_str)
+            matrix = [[0] * n for _ in range(n)]
+            for j in range(n):
+                matrix[j][j] = 1
+                
+            if n > 0:
+                for w_idx, (head_idx, rel) in enumerate(deps):
+                    head_idx = int(head_idx)
+                    if head_idx > 0:
+                        matrix[w_idx][head_idx - 1] = 1
+                        matrix[head_idx - 1][w_idx] = 1
             
-            # Extract Adjacency Matrix
-            dep_matrix = extract_dependency_matrix(segmented_snt)
-
-            # Write out JSONL
+            segmented_snt = " ".join(d_words) if n > 0 else b_data["snt"]
+            
             record = {
-                "amr": graph_str,
-                "sent": segmented_snt,  # Use segmented sentence
-                "dependency_matrix": dep_matrix # Add dependency matrix
+                "amr": b_data["graph_str"],
+                "sent": segmented_snt,
+                "dependency_matrix": matrix
             }
             out_f.write(json.dumps(record, ensure_ascii=False) + '\n')
+            
+    print(f"Finished {output_jsonl}")
 
 if __name__ == "__main__":
     data_dir = "../../data_amrbart"
