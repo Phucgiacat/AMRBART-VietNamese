@@ -155,8 +155,29 @@ def main():
                 
                 logger.info(f"Annotating {len(texts_to_annotate)} sentences with PhoNLP...")
                 try:
-                    annotations = phonlp_model.annotate(texts_to_annotate, batch_size=32)
-                    all_words, all_deps = annotations[0], annotations[3]
+                    import sys
+                    from tqdm import tqdm
+                    
+                    all_words = []
+                    all_deps = []
+                    
+                    # Suppress inner tqdm from PhoNLP by redirecting stderr
+                    old_stderr = sys.stderr
+                    with open(os.devnull, 'w') as fnull:
+                        sys.stderr = fnull
+                        for text in tqdm(texts_to_annotate, desc="PhoNLP Annotation", file=old_stderr):
+                            try:
+                                annotations = phonlp_model.annotate(text)
+                                if len(annotations[0]) > 0:
+                                    all_words.append(annotations[0][0])
+                                    all_deps.append(annotations[3][0])
+                                else:
+                                    all_words.append([])
+                                    all_deps.append([])
+                            except Exception:
+                                all_words.append([])
+                                all_deps.append([])
+                        sys.stderr = old_stderr
                     
                     for i, list_idx in enumerate(text_indices):
                         record = parsed_records[list_idx]
@@ -170,7 +191,9 @@ def main():
                                     record["dependency_matrix"][w_idx][head_idx - 1] = 1
                                     record["dependency_matrix"][head_idx - 1][w_idx] = 1
                 except Exception as e:
-                    logger.error(f"PhoNLP error during batch annotation: {e}")
+                    if hasattr(sys, 'stderr') and 'old_stderr' in locals():
+                        sys.stderr = old_stderr
+                    logger.error(f"PhoNLP error during annotation: {e}")
                     
             if needs_update:
                 logger.info(f"Updating {data_args.test_file} with injected dependency matrices...")
